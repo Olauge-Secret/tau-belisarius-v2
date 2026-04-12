@@ -180,7 +180,15 @@ async function runLoop(
 	// errors on the same file, force the model to move on.
 	const editErrorsByFile = new Map<string, number>();
 	const stuckFilesAlerted = new Set<string>();
-	const EDIT_ERROR_THRESHOLD_PER_FILE = 3;
+	const EDIT_ERROR_THRESHOLD_PER_FILE = 2;
+
+	// tau/sn66 v3: no-edit-yet detector. If after N total tool calls the agent
+	// has not made a single successful edit, inject an urgent steering message.
+	// This catches agents that over-explore or get stuck reading without editing.
+	let totalToolCalls = 0;
+	let hasSuccessfulEdit = false;
+	let noEditAlertSent = false;
+	const NO_EDIT_TOOL_CALL_THRESHOLD = 8;
 
 	// Outer loop: continues when queued follow-up messages arrive after agent would stop
 	while (true) {
@@ -281,7 +289,24 @@ async function runLoop(
 					} else {
 						// Successful edit on this file resets its error counter.
 						editErrorsByFile.set(targetPath, 0);
+						hasSuccessfulEdit = true;
 					}
+				}
+
+				// tau/sn66 v3: track total tool calls and inject urgency if no edit yet.
+				totalToolCalls += toolResults.length;
+				if (!hasSuccessfulEdit && !noEditAlertSent && totalToolCalls >= NO_EDIT_TOOL_CALL_THRESHOLD) {
+					noEditAlertSent = true;
+					pendingMessages.push({
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: "URGENT: You have made " + totalToolCalls + " tool calls but ZERO successful edits. You are running out of time. An empty diff scores ZERO and loses the round. You MUST make an edit NOW. Pick the most obvious file from the task, read it if you haven't, and make your best edit immediately. Do not search further. Do not explain. Just call edit.",
+							},
+						],
+						timestamp: Date.now(),
+					});
 				}
 			}
 
