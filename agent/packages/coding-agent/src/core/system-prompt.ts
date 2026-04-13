@@ -9,14 +9,26 @@ import { formatSkillsForPrompt, type Skill } from "./skills.js";
 /** v5: Build compact repo file tree at prompt time (zero LLM cost). */
 function buildRepoTree(cwd: string): string {
 	try {
-		const result = execSync(
-			`find . -type f \\( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.java" -o -name "*.kt" -o -name "*.rb" -o -name "*.cs" -o -name "*.vue" -o -name "*.rs" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.swift" -o -name "*.dart" -o -name "*.html" -o -name "*.css" -o -name "*.scss" -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" -o -name "*.json" -o -name "*.sql" -o -name "*.ex" -o -name "*.exs" -o -name "*.php" -o -name "*.sh" -o -name "*.xml" -o -name "*.proto" -o -name "*.graphql" -o -name "*.svelte" -o -name "Dockerfile" -o -name "Makefile" -o -name "*.md" \\) 2>/dev/null | grep -v node_modules | grep -v .git | grep -v dist/ | grep -v build/ | grep -v __pycache__ | grep -v .egg-info | grep -v vendor/ | grep -v .next/ | sort | head -200`,
-			{ cwd, timeout: 5000, encoding: "utf-8" }
-		).trim();
+		// Try multiple strategies to get file list (Docker sh compatibility)
+		let result = "";
+		try {
+			result = execSync(
+				`find . -type f 2>/dev/null | grep -v node_modules | grep -v '/.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v __pycache__ | grep -v .egg-info | grep -v '/vendor/' | grep -v '/.next/' | grep -v '/target/' | grep -E '\\.(ts|tsx|js|jsx|py|go|java|kt|rb|cs|vue|rs|c|cpp|h|hpp|swift|dart|html|css|scss|yaml|yml|toml|json|sql|ex|exs|php|sh|xml|proto|graphql|svelte|md)$' | sort | head -200`,
+				{ cwd, timeout: 5000, encoding: "utf-8", shell: "/bin/bash" }
+			).trim();
+		} catch {
+			// Fallback: simpler find without bash-specific features
+			try {
+				result = execSync(
+					`find . -type f 2>/dev/null | grep -v node_modules | grep -v '.git/' | sort | head -200`,
+					{ cwd, timeout: 5000, encoding: "utf-8" }
+				).trim();
+			} catch {}
+		}
 		if (!result) return "";
-		const files = result.split("\n").map(f => f.replace("./", ""));
+		const files = result.split("\n").map(f => f.replace("./", "")).filter(f => f.length > 0);
 		if (files.length === 0) return "";
-		return `\n\n## Repository file tree (${files.length} source files)\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\nUse this tree to identify which files to read and edit. Do NOT run \`find\` or \`ls\` — the tree above is complete.\n`;
+		return `\n\n## Repository file tree (${files.length} source files)\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\nUse this tree to identify files. Do NOT run \`find\`, \`ls\`, or \`tree\` — use paths from this tree directly.\n`;
 	} catch {}
 	return "";
 }

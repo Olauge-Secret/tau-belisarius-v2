@@ -183,8 +183,8 @@ async function runLoop(
 	let readsWithoutEdit = 0;
 	let hasEditedAnyFile = false;
 	let noToolCallRetries = 0;
-	const MAX_NO_TOOL_RETRIES = 2;
-	const MAX_READS_BEFORE_EDIT = 2;
+	const MAX_NO_TOOL_RETRIES = 4;
+	const MAX_READS_BEFORE_EDIT = 3;
 
 	// tau/sn66 v17: wall-clock time pressure. The validator kills us at
 	// min(cursor_time*2, 300s) but we don't know the exact budget. We
