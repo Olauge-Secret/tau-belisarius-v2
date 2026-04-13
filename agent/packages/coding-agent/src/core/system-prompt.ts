@@ -2,8 +2,62 @@
  * System prompt construction and project context loading
  */
 
+import { execSync } from "node:child_process";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
+
+function grepTaskKeywords(cwd: string, taskText: string): string {
+	try {
+		// Extract keywords: backtick identifiers, CamelCase, snake_case, file paths
+		const backtickMatches = taskText.match(/`([^`]{2,60})`/g)?.map(k => k.replace(/`/g, '')) || [];
+		const camelMatches = taskText.match(/\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b/g) || [];
+		const snakeMatches = taskText.match(/\b[a-z]+_[a-z_]+\b/g) || [];
+		// Extract file paths mentioned in task
+		const pathMatches = taskText.match(/(?:^|\s)([\w./\\-]+\.(?:ts|tsx|js|jsx|py|go|java|kt|rb|cs|vue|html|css|scss|yaml|yml|json|toml|rs|c|cpp|h|hpp|swift|dart|sql|ex|exs|php|sh))\b/g)?.map(p => p.trim()) || [];
+		const allKeywords = [...new Set([...backtickMatches, ...camelMatches, ...snakeMatches])]
+			.filter(k => k.length >= 3 && k.length <= 60)
+			.filter(k => !['the', 'and', 'for', 'with', 'that', 'this', 'from', 'should', 'must', 'when', 'each', 'into', 'also', 'been', 'have', 'will', 'does', 'not', 'are', 'was', 'were'].includes(k.toLowerCase()))
+			.slice(0, 12);
+		if (allKeywords.length === 0 && pathMatches.length === 0) return "";
+		const fileHits = new Map<string, string[]>();
+		// Add explicitly named files first
+		for (const p of pathMatches) {
+			if (!fileHits.has(p)) fileHits.set(p, []);
+			fileHits.get(p)!.push("*NAMED_IN_TASK*");
+		}
+		for (const keyword of allKeywords) {
+			try {
+				const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+				const result = execSync(
+					`grep -rl "${escaped}" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.py" --include="*.go" --include="*.java" --include="*.kt" --include="*.dart" --include="*.rb" --include="*.cs" --include="*.vue" --include="*.rs" --include="*.c" --include="*.cpp" --include="*.h" --include="*.hpp" --include="*.swift" --include="*.html" --include="*.css" --include="*.scss" --include="*.yaml" --include="*.yml" --include="*.toml" --include="*.sql" --include="*.ex" --include="*.exs" --include="*.php" . 2>/dev/null | grep -v node_modules | grep -v .git | grep -v dist/ | grep -v build/ | grep -v __pycache__ | grep -v .egg-info | head -10`,
+					{ cwd, timeout: 3000, encoding: "utf-8" }
+				).trim();
+				if (result) {
+					for (const file of result.split("\n")) {
+						const clean = file.replace("./", "");
+						if (!fileHits.has(clean)) fileHits.set(clean, []);
+						fileHits.get(clean)!.push(keyword);
+					}
+				}
+			} catch {}
+		}
+		if (fileHits.size === 0) return "";
+		const sorted = [...fileHits.entries()].sort((a, b) => b[1].length - a[1].length).slice(0, 20);
+		let result = "\n\n## Files matching task keywords\n\nThese files contain identifiers from the task — start with these:\n";
+		for (const [file, keywords] of sorted) {
+			result += `- \`${file}\` (${keywords.join(", ")})\n`;
+		}
+		// Count acceptance criteria bullets
+		const bulletCount = (taskText.match(/^[\s]*[-*•]\s/gm) || []).length;
+		const numberedCount = (taskText.match(/^[\s]*\d+[.)]\s/gm) || []).length;
+		const totalCriteria = bulletCount + numberedCount;
+		if (totalCriteria > 0) {
+			result += `\n**Task has ${totalCriteria} acceptance criteria/bullets — each likely needs at least one edit.**\n`;
+		}
+		return result + "\n";
+	} catch {}
+	return "";
+}
 
 // =============================================================================
 // tau / sn66 strategy preamble — baked into the system prompt so it is loaded
@@ -35,15 +89,17 @@ You are running inside the tau SWE harness on Bittensor subnet 66. Your unified 
 
 Your time budget varies per task (40–300 seconds). You do NOT know how much time you have. An empty diff scores 0. Therefore:
 - **Never run tests, builds, linters, servers, or type checkers.** The sandbox has no running services. These waste your entire budget.
-- **One bash call maximum** at the start to find file paths. Then use read directly.
+- **3 bash calls maximum** (find + grep + sibling ls). Then use read/edit only.
 - Your FIRST response MUST be a tool call. Never start with text or plans.
 
 ## Mandatory file discovery (BEFORE any edit)
 
 Before your first edit, run a quick search:
-- find . -type f -name "*.EXT" | grep -v node_modules | grep -v .git | head -40
+- find . -type f \( -name "*.EXT" -o -name "Dockerfile" -o -name "*.sh" -o -name "*.json" \) | grep -v node_modules | grep -v .git | head -60
 - grep -r "KEYWORD" --include="*.EXT" -l | head -10
 This costs 1 tool call but prevents editing the wrong file (which costs the entire round).
+
+After editing a file, check if there are **sibling files** in the same directory that also need editing. Run \`ls $(dirname path)/\` to see all files in that folder.
 
 ## File selection (highest leverage)
 
@@ -164,11 +220,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
+	const keywordHits = customPrompt ? grepTaskKeywords(resolvedCwd, customPrompt) : "";
+
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
 	if (customPrompt) {
-		let prompt = TAU_SCORING_PREAMBLE + customPrompt;
+		let prompt = TAU_SCORING_PREAMBLE + keywordHits + customPrompt;
 
 		if (appendSection) {
 			prompt += appendSection;

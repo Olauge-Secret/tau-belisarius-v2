@@ -177,6 +177,7 @@ async function runLoop(
 	const editErrorsByFile = new Map<string, number>();
 	const stuckFilesAlerted = new Set<string>();
 	const EDIT_ERROR_THRESHOLD_PER_FILE = 2;
+	const lastFailedOldText = new Map<string, string>();
 
 	// tau/sn66 v16: exploration budget + token-length retry + no-edit retry.
 	let readsWithoutEdit = 0;
@@ -305,6 +306,12 @@ async function runLoop(
 					if (tr.isError) {
 						const next = (editErrorsByFile.get(targetPath) ?? 0) + 1;
 						editErrorsByFile.set(targetPath, next);
+						const editOldText = (tc.arguments as any)?.old_string ?? (tc.arguments as any)?.oldText ?? "";
+						const prevFailed = lastFailedOldText.get(targetPath);
+						if (editOldText && prevFailed === editOldText && pendingMessages.length === 0) {
+							pendingMessages.push({ role: "user", content: [{ type: "text", text: `Edit on \`${targetPath}\` failed with SAME oldText twice. Call \`read\` on it NOW, then retry.` }], timestamp: Date.now() });
+						}
+						lastFailedOldText.set(targetPath, editOldText);
 						if (next >= EDIT_ERROR_THRESHOLD_PER_FILE && !stuckFilesAlerted.has(targetPath)) {
 							stuckFilesAlerted.add(targetPath);
 							pendingMessages.push({
@@ -319,8 +326,8 @@ async function runLoop(
 							});
 						}
 					} else {
-						// Successful edit on this file resets its error counter.
 						editErrorsByFile.set(targetPath, 0);
+						lastFailedOldText.delete(targetPath);
 						hasEditedAnyFile = true;
 						readsWithoutEdit = 0;
 						// tau/sn66 v17: after successful edit, warn model that
@@ -337,6 +344,36 @@ async function runLoop(
 							],
 							timestamp: Date.now(),
 						});
+					}
+				}
+
+				// ConnectionRefused detection
+				for (const tr of toolResults) {
+					if (tr.toolName === "bash" && !tr.isError) {
+						const output = tr.content?.map((c: any) => c.text ?? "").join("") ?? "";
+						if (output.includes("ConnectionRefusedError") || output.includes("Connection refused") || output.includes("ECONNREFUSED")) {
+							pendingMessages.push({ role: "user", content: [{ type: "text", text: "STOP: Sandbox has NO services. Do NOT retry connections. Call `read` or `edit` NOW." }], timestamp: Date.now() });
+							break;
+						}
+					}
+				}
+
+				// v5: after a successful read (not edit), nudge the model to edit immediately.
+				// This prevents the model from reading multiple files without editing any.
+				for (const tr of toolResults) {
+					if (tr.toolName === "read" && !tr.isError && !hasEditedAnyFile && pendingMessages.length === 0) {
+						const readPath = (tr as any).toolName === "read" ? ((toolCalls.find((tc: any) => tc.name === "read")?.arguments as any)?.path ?? "") : "";
+						if (readPath && readsWithoutEdit >= 1) {
+							pendingMessages.push({
+								role: "user",
+								content: [{
+									type: "text",
+									text: `You have read ${readsWithoutEdit + 1} items without editing. Call \`edit\` NOW on the most relevant file. Do not read more files.`,
+								}],
+								timestamp: Date.now(),
+							});
+						}
+						break;
 					}
 				}
 

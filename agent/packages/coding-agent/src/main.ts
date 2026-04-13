@@ -888,9 +888,10 @@ export async function main(args: string[]) {
 		settingsManager,
 	);
 
-	// Non-interactive solver runs: use "medium" thinking for balanced speed/quality.
+	// Non-interactive solver runs should prefer deterministic, lower-latency behavior.
+	// If the user did not explicitly pick a thinking level, default to "off".
 	if (!isInteractive && parsed.thinking === undefined && !cliThinkingFromModel) {
-		sessionOptions.thinkingLevel = "medium";
+		sessionOptions.thinkingLevel = "off";
 	}
 
 	if (parsed.apiKey) {
