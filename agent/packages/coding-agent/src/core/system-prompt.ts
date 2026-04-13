@@ -6,6 +6,21 @@ import { execSync } from "node:child_process";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
 
+/** v5: Build compact repo file tree at prompt time (zero LLM cost). */
+function buildRepoTree(cwd: string): string {
+	try {
+		const result = execSync(
+			`find . -type f \\( -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.go" -o -name "*.java" -o -name "*.kt" -o -name "*.rb" -o -name "*.cs" -o -name "*.vue" -o -name "*.rs" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.swift" -o -name "*.dart" -o -name "*.html" -o -name "*.css" -o -name "*.scss" -o -name "*.yaml" -o -name "*.yml" -o -name "*.toml" -o -name "*.json" -o -name "*.sql" -o -name "*.ex" -o -name "*.exs" -o -name "*.php" -o -name "*.sh" -o -name "*.xml" -o -name "*.proto" -o -name "*.graphql" -o -name "*.svelte" -o -name "Dockerfile" -o -name "Makefile" -o -name "*.md" \\) 2>/dev/null | grep -v node_modules | grep -v .git | grep -v dist/ | grep -v build/ | grep -v __pycache__ | grep -v .egg-info | grep -v vendor/ | grep -v .next/ | sort | head -200`,
+			{ cwd, timeout: 5000, encoding: "utf-8" }
+		).trim();
+		if (!result) return "";
+		const files = result.split("\n").map(f => f.replace("./", ""));
+		if (files.length === 0) return "";
+		return `\n\n## Repository file tree (${files.length} source files)\n\n\`\`\`\n${files.join("\n")}\n\`\`\`\n\nUse this tree to identify which files to read and edit. Do NOT run \`find\` or \`ls\` — the tree above is complete.\n`;
+	} catch {}
+	return "";
+}
+
 function grepTaskKeywords(cwd: string, taskText: string): string {
 	try {
 		// Extract keywords: backtick identifiers, CamelCase, snake_case, file paths
@@ -89,17 +104,9 @@ You are running inside the tau SWE harness on Bittensor subnet 66. Your unified 
 
 Your time budget varies per task (40–300 seconds). You do NOT know how much time you have. An empty diff scores 0. Therefore:
 - **Never run tests, builds, linters, servers, or type checkers.** The sandbox has no running services. These waste your entire budget.
-- **3 bash calls maximum** (find + grep + sibling ls). Then use read/edit only.
-- Your FIRST response MUST be a tool call. Never start with text or plans.
-
-## Mandatory file discovery (BEFORE any edit)
-
-Before your first edit, run a quick search:
-- find . -type f \( -name "*.EXT" -o -name "Dockerfile" -o -name "*.sh" -o -name "*.json" \) | grep -v node_modules | grep -v .git | head -60
-- grep -r "KEYWORD" --include="*.EXT" -l | head -10
-This costs 1 tool call but prevents editing the wrong file (which costs the entire round).
-
-After editing a file, check if there are **sibling files** in the same directory that also need editing. Run \`ls $(dirname path)/\` to see all files in that folder.
+- **Do NOT run find, ls, tree, or grep to discover files.** The file tree and keyword matches are pre-computed in the prompt above. Use them directly.
+- Your FIRST tool call should be \`read\` on the most relevant file from the keyword map, then immediately \`edit\`.
+- If the edit tool fails with "Could not find", the error includes the current file content — use it to fix your oldText without a separate \`read\` call.
 
 ## File selection (highest leverage)
 
@@ -220,13 +227,14 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
+	const repoTree = buildRepoTree(resolvedCwd);
 	const keywordHits = customPrompt ? grepTaskKeywords(resolvedCwd, customPrompt) : "";
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
 
 	if (customPrompt) {
-		let prompt = TAU_SCORING_PREAMBLE + keywordHits + customPrompt;
+		let prompt = TAU_SCORING_PREAMBLE + repoTree + keywordHits + customPrompt;
 
 		if (appendSection) {
 			prompt += appendSection;

@@ -272,7 +272,26 @@ export function createEditToolDefinition(
 								}
 
 								if (!aborted) {
-									reject(error instanceof Error ? error : new Error(String(error)));
+									// v5: On edit failure, include relevant file content so the LLM
+									// doesn't need a separate read call. Saves one full round-trip.
+									const errMsg = error instanceof Error ? error.message : String(error);
+									let hint = "";
+									if (errMsg.includes("Could not find") || errMsg.includes("not found")) {
+										try {
+											const buf = await ops.readFile(absolutePath);
+											const fileContent = buf.toString("utf-8");
+											const lines = fileContent.split("\n");
+											if (lines.length <= 200) {
+												hint = `\n\nCurrent file content (${lines.length} lines):\n\`\`\`\n${fileContent}\n\`\`\``;
+											} else {
+												// For large files, show first 100 + last 50 lines
+												const head = lines.slice(0, 100).join("\n");
+												const tail = lines.slice(-50).join("\n");
+												hint = `\n\nFile has ${lines.length} lines. First 100 + last 50:\n\`\`\`\n${head}\n...\n${tail}\n\`\`\``;
+											}
+										} catch {}
+									}
+									reject(new Error(errMsg + hint));
 								}
 							}
 						})();
